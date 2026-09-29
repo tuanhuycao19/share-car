@@ -1,0 +1,179 @@
+// Share Car — schema cơ bản
+// Quy ước: tên model PascalCase, bảng/cột snake_case; thời gian lưu UTC (timestamptz),
+// tiền tệ VND lưu số nguyên (Int, đơn vị đồng).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis]
+}
+
+enum Role {
+  PASSENGER
+  DRIVER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+}
+
+enum DriverStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// SEATS_5: tối đa 4 ghế khách; SEATS_7: tối đa 6 ghế khách
+enum VehicleType {
+  SEATS_5
+  SEATS_7
+}
+
+enum TripStatus {
+  SCHEDULED
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  REJECTED
+  COMPLETED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  phone        String     @unique
+  passwordHash String     @map("password_hash")
+  fullName     String     @map("full_name")
+  role         Role       @default(PASSENGER)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  driverProfile   DriverProfile? @relation("DriverProfileUser")
+  reviewedDrivers DriverProfile[] @relation("DriverProfileReviewer")
+  vehicles        Vehicle[]
+  trips           Trip[]
+  bookings        Booking[]
+
+  @@index([role, status])
+  @@map("users")
+}
+
+model DriverProfile {
+  id            String       @id @default(uuid()) @db.Uuid
+  userId        String       @unique @map("user_id") @db.Uuid
+  licenseNumber String       @unique @map("license_number")
+  status        DriverStatus @default(PENDING)
+  rejectReason  String?      @map("reject_reason")
+  reviewedAt    DateTime?    @map("reviewed_at") @db.Timestamptz(3)
+  reviewedById  String?      @map("reviewed_by_id") @db.Uuid
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user       User  @relation("DriverProfileUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("DriverProfileReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@map("driver_profiles")
+}
+
+model Vehicle {
+  id          String      @id @default(uuid()) @db.Uuid
+  driverId    String      @map("driver_id") @db.Uuid
+  plateNumber String      @unique @map("plate_number")
+  brand       String
+  model       String
+  color       String?
+  type        VehicleType
+  isActive    Boolean     @default(true) @map("is_active")
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  driver User   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  trips  Trip[]
+
+  @@index([driverId])
+  @@map("vehicles")
+}
+
+model Trip {
+  id             String     @id @default(uuid()) @db.Uuid
+  driverId       String     @map("driver_id") @db.Uuid
+  vehicleId      String     @map("vehicle_id") @db.Uuid
+  originAddress  String     @map("origin_address")
+  originLat      Float      @map("origin_lat")
+  originLng      Float      @map("origin_lng")
+  destAddress    String     @map("dest_address")
+  destLat        Float      @map("dest_lat")
+  destLng        Float      @map("dest_lng")
+  departureTime  DateTime   @map("departure_time") @db.Timestamptz(3)
+  /// Giá mỗi ghế (VND)
+  pricePerSeat   Int        @map("price_per_seat")
+  /// Số ghế mở bán (<= sức chứa khách của xe). CHECK constraint trong migration.
+  totalSeats     Int        @map("total_seats")
+  /// Tồn ghế — chỉ được thay đổi qua transaction đặt/hủy. CHECK 0 <= available <= total.
+  availableSeats Int        @map("available_seats")
+  status         TripStatus @default(SCHEDULED)
+  note           String?
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  // Cột PostGIS sinh tự động (GENERATED ALWAYS ... STORED) từ lat/lng — xem migration.
+  // route_geog hiện là đường thẳng origin→dest (MOCK tuyến đường), sau này thay bằng polyline thật.
+  originGeog Unsupported("geography(Point,4326)")?      @default(dbgenerated("(st_setsrid(st_makepoint(origin_lng, origin_lat), 4326))::geography")) @map("origin_geog")
+  destGeog   Unsupported("geography(Point,4326)")?      @default(dbgenerated("(st_setsrid(st_makepoint(dest_lng, dest_lat), 4326))::geography")) @map("dest_geog")
+  routeGeog  Unsupported("geography(LineString,4326)")? @default(dbgenerated("(st_makeline(st_setsrid(st_makepoint(origin_lng, origin_lat), 4326), st_setsrid(st_makepoint(dest_lng, dest_lat), 4326)))::geography")) @map("route_geog")
+
+  driver   User      @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vehicle  Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  bookings Booking[]
+
+  @@index([status, departureTime])
+  @@index([driverId, departureTime])
+  @@index([originGeog], type: Gist)
+  @@index([destGeog], type: Gist)
+  @@index([routeGeog], type: Gist)
+  @@map("trips")
+}
+
+model Booking {
+  id             String        @id @default(uuid()) @db.Uuid
+  tripId         String        @map("trip_id") @db.Uuid
+  passengerId    String        @map("passenger_id") @db.Uuid
+  seats          Int
+  /// Đơn giá tại thời điểm đặt (VND) — do backend lấy từ Trip, không tin client
+  pricePerSeat   Int           @map("price_per_seat")
+  /// = seats * pricePerSeat (VND)
+  totalPrice     Int           @map("total_price")
+  pickupAddress  String        @map("pickup_address")
+  pickupLat      Float         @map("pickup_lat")
+  pickupLng      Float         @map("pickup_lng")
+  dropoffAddress String        @map("dropoff_address")
+  dropoffLat     Float         @map("dropoff_lat")
+  dropoffLng     Float         @map("dropoff_lng")
+  note           String?
+  status         BookingStatus @default(CONFIRMED)
+  cancelReason   String?       @map("cancel_reason")
+  cancelledAt    DateTime?     @map("cancelled_at") @db.Timestamptz(3)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  trip      Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  passenger User @relation(fields: [passengerId], references: [id], onDelete: Restrict)
+
+  @@index([tripId, status])
+  @@index([passengerId, createdAt])
+  @@map("bookings")
+}

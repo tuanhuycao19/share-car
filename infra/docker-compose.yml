@@ -1,0 +1,90 @@
+# Chạy hạ tầng (Postgres+PostGIS, Redis):   pnpm infra:up
+# Chạy toàn bộ stack trong Docker:          pnpm stack:up
+name: share-car
+
+x-env: &env
+  env_file:
+    - path: ../.env
+      required: false
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    <<: *env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sharecar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sharecar}
+      POSTGRES_DB: ${POSTGRES_DB:-sharecar}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  engine:
+    profiles: ["app"]
+    build:
+      context: ../services/engine
+      dockerfile: ../../infra/docker/engine.Dockerfile
+    ports:
+      - "${ENGINE_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+    <<: *env
+    environment:
+      # Ghi đè host cho mạng nội bộ Docker
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sharecar}:${POSTGRES_PASSWORD:-sharecar}@postgres:5432/${POSTGRES_DB:-sharecar}?schema=public
+      REDIS_URL: redis://redis:6379
+      ENGINE_URL: http://engine:8000
+      API_PORT: 4000
+    ports:
+      - "${API_PORT:-4000}:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      engine:
+        condition: service_healthy
+
+  web:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:
