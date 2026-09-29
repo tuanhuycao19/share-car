@@ -1,0 +1,31 @@
+{
+  "name": "share-car",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d postgres redis",
+    "infra:down": "docker compose --env-file .env -f infra/docker-compose.yml --profile app down",
+    "stack:up": "docker compose --env-file .env -f infra/docker-compose.yml --profile app up -d --build",
+    "db:migrate": "pnpm --filter @share-car/api db:migrate",
+    "db:deploy": "pnpm --filter @share-car/api db:deploy",
+    "db:seed": "pnpm --filter @share-car/api db:seed",
+    "db:reset": "pnpm --filter @share-car/api db:reset",
+    "dev": "pnpm --parallel --filter @share-car/api --filter @share-car/web dev",
+    "dev:api": "pnpm --filter @share-car/api dev",
+    "dev:web": "pnpm --filter @share-car/web dev",
+    "dev:engine": "cd services/engine && uv run uvicorn app.main:app --reload --port 8000",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "api-client:generate": "pnpm --filter @share-car/api openapi:export && pnpm --filter @share-car/api-client generate",
+    "smoke": "node scripts/smoke-e2e.mjs",
+    "stack:seed": "docker compose --env-file .env -f infra/docker-compose.yml exec api pnpm db:seed"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
